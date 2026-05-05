@@ -1,0 +1,3 @@
+name = "svg-reflect-worker"
+main = "src/worker.js"
+compatibility_date = "2025-12-01"

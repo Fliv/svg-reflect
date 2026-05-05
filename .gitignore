@@ -1,3 +1,5 @@
 .gocache/
 .server.*.log
-svgreflect.exe
+node_modules/
+.wrangler/
+dist/
