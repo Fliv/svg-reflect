@@ -6,23 +6,31 @@ Cloudflare Worker that renders configured request data as SVG.
 
 ```text
 GET /svg/{profile}.svg
+GET /svg/{profile}.png
 ```
 
 Examples:
 
 ```text
 https://your-worker.example/svg/default.svg?user=alice&trace=123
+https://your-worker.example/svg/default.png?user=alice&trace=123
 https://your-worker.example/svg/debug.svg?trace=abc
 ```
 
 Profile names must contain only letters, digits, `_`, and `-`.
+PNG endpoints resolve the same profile as the corresponding SVG path, then
+return a PNG rendering of that SVG using `resvg`.
 
 Long text, header values, and query values wrap automatically inside the SVG
-width, and the SVG height grows to fit the wrapped lines.
+width, and the image height grows to fit the wrapped lines.
+
+SVG and PNG responses use the bundled Roboto Mono font so browser-rendered SVGs
+and generated PNGs use the same font metrics.
 
 ## Configure
 
-Edit `src/config.js`. Each profile under `svgs` becomes one SVG endpoint:
+Edit `src/config.js`. Each profile under `svgs` becomes matching SVG and PNG
+endpoints:
 
 ```js
 export const config = {

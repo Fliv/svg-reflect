@@ -10,5 +10,9 @@
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "@fontsource/roboto-mono": "^5.2.9",
+    "@resvg/resvg-wasm": "^2.6.2"
   }
 }

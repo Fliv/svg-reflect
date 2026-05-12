@@ -1,3 +1,4 @@
+import { Resvg, initWasm } from "@resvg/resvg-wasm";
 import { config as defaultConfig } from "./config.js";
 
 const DEFAULT_WIDTH = 800;
@@ -8,6 +9,9 @@ const MONOSPACE_CHAR_WIDTH_NUMERATOR = 6;
 const MONOSPACE_CHAR_WIDTH_DENOMINATOR = 10;
 const CONTINUATION_PREFIX = "  ";
 const PROFILE_PATTERN = /^[A-Za-z0-9_-]+$/;
+const DEFAULT_FONT_FAMILY = "ui-monospace, SFMono-Regular, Consolas, Liberation Mono, monospace";
+
+let resvgInitPromise = null;
 
 export default {
   fetch(request) {
@@ -15,7 +19,7 @@ export default {
   }
 };
 
-export function handleRequest(request, config = defaultConfig) {
+export async function handleRequest(request, config = defaultConfig, options = {}) {
   if (request.method !== "GET") {
     return new Response("method not allowed", {
       status: 405,
@@ -24,23 +28,43 @@ export function handleRequest(request, config = defaultConfig) {
   }
 
   const url = new URL(request.url);
-  const profile = svgProfileFromPath(url.pathname);
-  if (!profile) {
+  const route = imageRouteFromPath(url.pathname);
+  if (!route) {
     return new Response("not found", { status: 404 });
   }
 
-  const svgConfig = config?.svgs?.[profile];
+  const svgConfig = config?.svgs?.[route.profile];
   if (!svgConfig) {
     return new Response("not found", { status: 404 });
   }
 
-  return new Response(renderSVG(svgConfig, request, url), {
+  const svg = renderSVG(svgConfig, request, url, options);
+  if (route.format === "png") {
+    return new Response(await svgToPNG(svg, options), {
+      status: 200,
+      headers: {
+        "Content-Type": "image/png",
+        "Cache-Control": "no-store"
+      }
+    });
+  }
+
+  return new Response(svg, {
     status: 200,
     headers: {
       "Content-Type": "image/svg+xml; charset=utf-8",
       "Cache-Control": "no-store"
     }
   });
+}
+
+export function imageRouteFromPath(pathname) {
+  const match = pathname.match(/^\/svg\/([^/]+)\.(svg|png)$/);
+  if (!match) {
+    return null;
+  }
+  const profile = match[1];
+  return PROFILE_PATTERN.test(profile) ? { profile, format: match[2] } : null;
 }
 
 export function svgProfileFromPath(pathname) {
@@ -52,13 +76,15 @@ export function svgProfileFromPath(pathname) {
   return PROFILE_PATTERN.test(profile) ? profile : "";
 }
 
-export function renderSVG(svgConfig, request, url = new URL(request.url)) {
+export function renderSVG(svgConfig, request, url = new URL(request.url), options = {}) {
   const width = positiveInt(svgConfig.width, DEFAULT_WIDTH);
   const fontSize = positiveInt(svgConfig.fontSize ?? svgConfig.font_size, DEFAULT_FONT_SIZE);
+  const fontFamily = String(options.fontFamily ?? DEFAULT_FONT_FAMILY);
   const rows = Array.isArray(svgConfig.rows) ? svgConfig.rows : [];
   const lines = wrapRenderedLines(renderLines(rows, request, url), width, fontSize);
   const lineHeight = Math.max(fontSize + Math.floor(fontSize / 2), fontSize + 6);
   const height = Math.max(64, SVG_PADDING_Y * 2 + lineHeight * lines.length);
+  const fontDefinition = renderFontDefinition(options);
 
   const textLines = lines
     .map((line, index) => {
@@ -69,12 +95,38 @@ export function renderSVG(svgConfig, request, url = new URL(request.url)) {
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-  <rect width="100%" height="100%" fill="#ffffff"/>
-  <g font-family="ui-monospace, SFMono-Regular, Consolas, Liberation Mono, monospace" font-size="${fontSize}" fill="#111827">
+${fontDefinition}  <rect width="100%" height="100%" fill="#ffffff"/>
+  <g font-family="${escapeXML(fontFamily)}" font-size="${fontSize}" fill="#111827">
 ${textLines}
   </g>
 </svg>
 `;
+}
+
+export async function svgToPNG(svg, options = {}) {
+  await ensureResvgInitialized(options.resvgWasm);
+
+  const fontBuffers = normalizeFontBuffers(options.fontBuffers);
+  const resvg = new Resvg(svg, {
+    font:
+      fontBuffers.length > 0
+        ? {
+            fontBuffers,
+            defaultFontFamily: options.fontFamily,
+            loadSystemFonts: false
+          }
+        : {
+            defaultFontFamily: options.fontFamily,
+            loadSystemFonts: true
+          },
+    textRendering: 1
+  });
+
+  try {
+    return resvg.render().asPng();
+  } finally {
+    resvg.free();
+  }
 }
 
 export function renderLines(rows, request, url) {
@@ -169,6 +221,57 @@ export function wrapLine(line, maxChars) {
   return lines.length > 0 ? lines : [""];
 }
 
+function renderFontDefinition(options) {
+  if (!options.fontDataUri || !options.fontFamily) {
+    return "";
+  }
+
+  return `  <defs>
+    <style><![CDATA[
+      @font-face {
+        font-family: '${cssString(options.fontFamily)}';
+        src: url(${options.fontDataUri}) format('woff2');
+        font-weight: 400;
+        font-style: normal;
+      }
+    ]]></style>
+  </defs>
+`;
+}
+
+async function ensureResvgInitialized(resvgWasm) {
+  if (!resvgWasm) {
+    throw new Error("resvg wasm input is required to render PNG");
+  }
+
+  if (!resvgInitPromise) {
+    resvgInitPromise = initWasm(resvgWasm).catch((error) => {
+      resvgInitPromise = null;
+      throw error;
+    });
+  }
+  await resvgInitPromise;
+}
+
+function normalizeFontBuffers(fontBuffers) {
+  if (!Array.isArray(fontBuffers)) {
+    return [];
+  }
+
+  return fontBuffers.map((buffer) => {
+    if (buffer instanceof Uint8Array) {
+      return buffer;
+    }
+    if (buffer instanceof ArrayBuffer) {
+      return new Uint8Array(buffer);
+    }
+    if (ArrayBuffer.isView(buffer)) {
+      return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    }
+    return new Uint8Array(buffer);
+  });
+}
+
 function bestWrapSplit(chars, limit) {
   if (limit >= chars.length) {
     return chars.length;
@@ -224,4 +327,8 @@ function escapeXML(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&#34;")
     .replaceAll("'", "&#39;");
+}
+
+function cssString(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }

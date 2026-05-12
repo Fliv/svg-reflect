@@ -28,6 +28,16 @@ export const config = {
         { type: "header", name: "User-Agent" },
         { type: "query", name: "trace" }
       ]
+    },
+    g: {
+      width: 800,
+      fontSize: 16,
+      rows: [
+        { type: "header", name: "Cf-Connecting-Ip", label: "Client IP" },
+        { type: "header", name: "User-Agent", label: "User Agent" },
+        { type: "header", name: "Authorization", label: "Authorization" },
+        { type: "query", label: "param" }
+      ]
     }
   }
 };
